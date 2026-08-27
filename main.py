@@ -1,24 +1,472 @@
-import sys
+import os
+import json
+import time
+
+import streamlit as st
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
 
-print("1. Loading environment...", flush=True)
-load_dotenv(override=True)
+load_dotenv()
 
-print("2. Initializing client...", flush=True)
-client = genai.Client()
+client = genai.Client(
+    api_key=os.environ["GEMINI_API_KEY"]
+)
 
-print("3. Requesting Gemini API (15s timeout)...", flush=True)
-try:
+
+def chunk_line(text):
+    prompt = f"""
+You are helping a user memorize a line of text.
+
+Break the supplied text into memorization chunks.
+
+Rules:
+1. Each chunk must contain no more than 10 words.
+2. Chunks should ideally contain 6–10 words.
+3. Prefer natural grammatical, semantic, and rhythmic boundaries.
+4. Prefer chunks that form coherent phrases, clauses, or ideas.
+5. Do not split a phrase unnecessarily just to reach 10 words.
+6. A chunk may contain fewer than 6 words when necessary to preserve a natural phrase or because it is the end of the text.
+7. Keep every word exactly as provided.
+8. Do not correct spelling, grammar, punctuation, capitalization, contractions, or archaic language.
+9. Do not add or remove any words.
+10. Every word in the original text must appear exactly once in the chunks.
+11. Return ONLY valid JSON.
+12. The JSON must use exactly this format:
+
+{{
+    "chunks": [
+        "first chunk",
+        "second chunk",
+        "third chunk"
+    ]
+}}
+
+TEXT TO CHUNK:
+{text}
+"""
+
     interaction = client.interactions.create(
-        model="gemini-3.7-flash",
-        input="Explain how AI works in a few words",
+        model="gemini-3.6-flash",
+        input=prompt
+    )
+
+    return json.loads(interaction.output_text)
+
+def evaluate_recitation(expected, spoken):
+    prompt = f"""
+Compare these two pieces of text for a memorization exercise.
+
+EXPECTED:
+{expected}
+
+USER'S RESPONSE:
+{spoken}
+
+Determine whether the user's response matches the expected text.
+
+Ignore:
+- capitalization
+- punctuation
+- differences in whitespace
+
+Do NOT ignore:
+- missing words
+- extra words
+- substituted words
+- words in the wrong order
+"""
+
+    interaction = client.interactions.create(
+        model="gemini-3.6-flash",
+        input=prompt,
+        response_format={
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "correct": {
+                        "type": "boolean"
+                    },
+                    "mistakes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "expected": {
+                                    "type": ["string", "null"]
+                                },
+                                "heard": {
+                                    "type": ["string", "null"]
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "missing",
+                                        "extra",
+                                        "wrong_word",
+                                        "wrong_order"
+                                    ]
+                                }
+                            },
+                            "required": [
+                                "expected",
+                                "heard",
+                                "type"
+                            ]
+                        }
+                    }
+                },
+                "required": [
+                    "correct",
+                    "mistakes"
+                ]
+            }
+        }
+    )
+
+    return json.loads(interaction.output_text)
+
+# def evaluate_recitation(expected, spoken):
+#     prompt = f"""
+# Compare these two pieces of text for a memorization exercise.
+
+# EXPECTED:
+# {expected}
+
+# USER'S RESPONSE:
+# {spoken}
+
+# Determine whether the user's response matches the expected text.
+
+# Ignore:
+# - capitalization
+# - punctuation
+# - differences in whitespace
+
+# Do NOT ignore:
+# - missing words
+# - extra words
+# - substituted words
+# - words in the wrong order
+
+# Return ONLY valid JSON using exactly this format:
+
+# {{
+#     "correct": true,
+#     "mistakes": []
+# }}
+
+# or:
+
+# {{
+#     "correct": false,
+#     "mistakes": [
+#         {{
+#             "expected": "expected word",
+#             "heard": "word user typed, or null if missing",
+#             "type": "missing | extra | wrong_word | wrong_order"
+#         }}
+#     ]
+# }}
+# """
+
+#     interaction = client.interactions.create(
+#         model="gemini-3.6-flash",
+#         input=prompt
+#     )
+
+#     return json.loads(interaction.output_text)
+
+
+# -------------------------
+# Streamlit UI
+# -------------------------
+
+st.title("🎭 Memorize Your Lines")
+
+st.write(
+    "Enter a line you'd like to memorize. "
+    "Gemini will divide it into manageable memorization chunks."
+)
+
+line = st.text_area(
+    "Your line",
+    height=150,
+    placeholder="Enter your line here..."
+)
+
+
+if st.button("Create Chunks"):
+
+    if not line.strip():
+        st.warning("Please enter a line first.")
+
+    else:
+        with st.spinner("Creating memorization chunks..."):
+            result = chunk_line(line)
+
+        st.session_state.chunks = result["chunks"]
+        st.session_state.started = False
+        st.session_state.reveal_start = None
+        st.session_state.submitted = False
+        st.session_state.result = None
+
+
+# -------------------------
+# Display chunks
+# -------------------------
+
+if "chunks" in st.session_state:
+
+    st.subheader("Your memorization chunks")
+
+    for i, chunk in enumerate(
+        st.session_state.chunks,
+        start=1
+    ):
+        st.write(f"**Chunk {i}:** {chunk}")
+
+    st.divider()
+
+    if st.button("Start Memorizing"):
+
+        st.session_state.started = True
+        st.session_state.reveal_start = time.time()
+        st.session_state.submitted = False
+        st.session_state.result = None
+        st.rerun()
+
+
+# -------------------------
+# Memorization exercise
+# -------------------------
+
+if st.session_state.get("started", False):
+
+    chunks = st.session_state.chunks
+
+    # Start with the last chunk
+    current_index = len(chunks) - 1
+    current_chunk = chunks[current_index]
+
+    # Record when the chunk was first displayed
+    if st.session_state.reveal_start is None:
+        st.session_state.reveal_start = time.time()
+
+    elapsed = time.time() - st.session_state.reveal_start
+
+    # Show chunk for five seconds
+    if elapsed < 5:
+
+        remaining = 5 - int(elapsed)
+
+        st.subheader("Memorize this:")
+
+        st.markdown(
+            f"### {current_chunk}"
         )
-    
-    print("\n4. Output received:")
-    print(interaction.output_text)
+
+        st.write(f"Starting in {remaining}...")
+
+        time.sleep(0.1)
+        st.rerun()
+
+    # After five seconds, hide chunk and allow user to type it
+    else:
+
+        st.subheader("Your turn")
+
+        st.write(
+            "Type the chunk you just memorized:"
+        )
+
+        response = st.text_input(
+            "Recite the chunk",
+            key="recitation_input"
+        )
+
+        if st.button("Check Answer"):
+
+            if not response.strip():
+
+                st.warning("Please enter your response.")
+
+            else:
+
+                with st.spinner("Checking your answer..."):
+
+                    result = evaluate_recitation(
+                        current_chunk,
+                        response
+                    )
+
+                st.session_state.result = result
+                st.session_state.submitted = True
+
+                st.rerun()
 
 
-except Exception as e:
-    print(f"\n❌ Request failed: {e}", flush=True)
+# -------------------------
+# Results
+# -------------------------
+
+if st.session_state.get("submitted", False):
+
+    result = st.session_state.result
+
+    if result["correct"]:
+
+        st.success("Correct! 🎉")
+
+    else:
+
+        st.error("Not quite. Try again.")
+
+        if result["mistakes"]:
+
+            st.write("Mistakes:")
+
+            for mistake in result["mistakes"]:
+
+                mistake_type = mistake["type"]
+                expected = mistake["expected"]
+                heard = mistake["heard"]
+
+                if mistake_type == "missing":
+
+                    st.write(
+                        f"Missing word: **{expected}**"
+                    )
+
+                elif mistake_type == "extra":
+
+                    st.write(
+                        f"Extra word: **{heard}**"
+                    )
+
+                elif mistake_type == "wrong_word":
+
+                    st.write(
+                        f"You said **{heard}**, "
+                        f"but the expected word was **{expected}**."
+                    )
+
+                elif mistake_type == "wrong_order":
+
+                    st.write(
+                        f"Word order issue involving "
+                        f"**{heard}** / **{expected}**."
+                    )
+
+        if st.button("Try Again"):
+
+            st.session_state.submitted = False
+            st.session_state.result = None
+            st.session_state.reveal_start = time.time()
+
+            if "recitation_input" in st.session_state:
+                del st.session_state["recitation_input"]
+
+            st.rerun()
+
+
+# import os
+# import json
+
+# import streamlit as st
+# from dotenv import load_dotenv
+# from google import genai
+
+# load_dotenv()
+
+# client = genai.Client(
+#     api_key=os.environ["GEMINI_API_KEY"]
+# )
+
+
+# def chunk_line(text):
+#     prompt = f"""
+# You are helping a user memorize a line of text.
+
+# Break the supplied text into memorization chunks.
+
+# Rules:
+# 1. Each chunk must contain no more than 10 words.
+# 2. Chunks should ideally contain 6–10 words.
+# 3. Prefer natural grammatical, semantic, and rhythmic boundaries.
+# 4. Prefer chunks that form coherent phrases, clauses, or ideas.
+# 5. Do not split a phrase unnecessarily just to reach 10 words.
+# 6. A chunk may contain fewer than 6 words when necessary to preserve a natural phrase or because it is the end of the text.
+# 7. Keep every word exactly as provided.
+# 8. Do not correct spelling, grammar, punctuation, capitalization, contractions, or archaic language.
+# 9. Do not add or remove any words.
+# 10. Every word in the original text must appear exactly once in the chunks.
+# 11. Return ONLY valid JSON.
+# 12. The JSON must use exactly this format:
+
+# {{
+#     "chunks": [
+#         "first chunk",
+#         "second chunk",
+#         "third chunk"
+#     ]
+# }}
+
+# TEXT TO CHUNK:
+# {text}
+# """
+
+#     interaction = client.interactions.create(
+#         model="gemini-3.6-flash",
+#         input=prompt
+#     )
+
+#     return json.loads(interaction.output_text)
+
+
+# # -------------------------
+# # Streamlit UI
+# # -------------------------
+
+# st.title("🎭 Memorize Your Lines")
+
+# st.write(
+#     "Enter a line you'd like to memorize. "
+#     "Gemini will divide it into manageable memorization chunks."
+# )
+
+# line = st.text_area(
+#     "Your line",
+#     height=150,
+#     placeholder="Enter your line here..."
+# )
+
+
+# if st.button("Create Chunks"):
+
+#     if not line.strip():
+#         st.warning("Please enter a line first.")
+
+#     else:
+#         with st.spinner("Creating memorization chunks..."):
+
+#             result = chunk_line(line)
+
+#         st.session_state.chunks = result["chunks"]
+#         st.session_state.started = False
+
+
+# # -------------------------
+# # Display chunks
+# # -------------------------
+
+# if "chunks" in st.session_state:
+
+#     st.subheader("Your memorization chunks")
+
+#     for i, chunk in enumerate(
+#         st.session_state.chunks,
+#         start=1
+#     ):
+#         st.write(f"**Chunk {i}:** {chunk}")
