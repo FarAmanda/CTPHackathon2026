@@ -127,58 +127,6 @@ Do NOT ignore:
 
     return json.loads(interaction.output_text)
 
-# def evaluate_recitation(expected, spoken):
-#     prompt = f"""
-# Compare these two pieces of text for a memorization exercise.
-
-# EXPECTED:
-# {expected}
-
-# USER'S RESPONSE:
-# {spoken}
-
-# Determine whether the user's response matches the expected text.
-
-# Ignore:
-# - capitalization
-# - punctuation
-# - differences in whitespace
-
-# Do NOT ignore:
-# - missing words
-# - extra words
-# - substituted words
-# - words in the wrong order
-
-# Return ONLY valid JSON using exactly this format:
-
-# {{
-#     "correct": true,
-#     "mistakes": []
-# }}
-
-# or:
-
-# {{
-#     "correct": false,
-#     "mistakes": [
-#         {{
-#             "expected": "expected word",
-#             "heard": "word user typed, or null if missing",
-#             "type": "missing | extra | wrong_word | wrong_order"
-#         }}
-#     ]
-# }}
-# """
-
-#     interaction = client.interactions.create(
-#         model="gemini-3.6-flash",
-#         input=prompt
-#     )
-
-#     return json.loads(interaction.output_text)
-
-
 # -------------------------
 # Streamlit UI
 # -------------------------
@@ -229,60 +177,90 @@ if "chunks" in st.session_state:
 
     st.divider()
 
-    if st.button("Start Memorizing"):
+    # if st.button("Start Memorizing"):
 
-        st.session_state.started = True
-        st.session_state.reveal_start = time.time()
-        st.session_state.submitted = False
-        st.session_state.result = None
-        st.rerun()
+    #     st.session_state.started = True
+    #     st.session_state.reveal_start = time.time()
+    #     st.session_state.submitted = False
+    #     st.session_state.result = None
+    #     st.rerun()
 
 
 # -------------------------
-# Memorization exercise
+# Start memorization
+# -------------------------
+
+if st.button("Start Memorizing"):
+
+    st.session_state.started = True
+    st.session_state.current_index = len(st.session_state.chunks) - 1
+    st.session_state.reveal_start = time.time()
+    st.session_state.phase = "reveal"
+    st.session_state.submitted = False
+    st.session_state.result = None
+
+    if "recitation_input" in st.session_state:
+        del st.session_state["recitation_input"]
+
+    st.rerun()
+
+
+# -------------------------
+# Memorization loop
 # -------------------------
 
 if st.session_state.get("started", False):
 
     chunks = st.session_state.chunks
+    current_index = st.session_state.current_index
 
-    # Start with the last chunk
-    current_index = len(chunks) - 1
-    current_chunk = chunks[current_index]
+    # Everything from current_index through the end
+    current_target = " ".join(chunks[current_index:])
 
-    # Record when the chunk was first displayed
-    if st.session_state.reveal_start is None:
-        st.session_state.reveal_start = time.time()
+    # -------------------------
+    # Reveal phase
+    # -------------------------
 
-    elapsed = time.time() - st.session_state.reveal_start
+    if st.session_state.phase == "reveal":
 
-    # Show chunk for five seconds
-    if elapsed < 5:
+        elapsed = time.time() - st.session_state.reveal_start
 
-        remaining = 5 - int(elapsed)
+        if elapsed < 5:
 
-        st.subheader("Memorize this:")
+            remaining = 5 - int(elapsed)
 
-        st.markdown(
-            f"### {current_chunk}"
-        )
+            st.subheader("Memorize this:")
 
-        st.write(f"Starting in {remaining}...")
+            st.markdown(
+                f"### {current_target}"
+            )
 
-        time.sleep(0.1)
-        st.rerun()
+            st.write(f"Starting in {remaining}...")
 
-    # After five seconds, hide chunk and allow user to type it
-    else:
+            time.sleep(0.1)
+            st.rerun()
+
+        else:
+
+            st.session_state.phase = "recite"
+
+            st.rerun()
+
+
+    # -------------------------
+    # Recitation phase
+    # -------------------------
+
+    elif st.session_state.phase == "recite":
 
         st.subheader("Your turn")
 
         st.write(
-            "Type the chunk you just memorized:"
+            "Type what you just memorized:"
         )
 
         response = st.text_input(
-            "Recite the chunk",
+            "Recite the line",
             key="recitation_input"
         )
 
@@ -297,7 +275,7 @@ if st.session_state.get("started", False):
                 with st.spinner("Checking your answer..."):
 
                     result = evaluate_recitation(
-                        current_chunk,
+                        current_target,
                         response
                     )
 
@@ -318,6 +296,46 @@ if st.session_state.get("submitted", False):
     if result["correct"]:
 
         st.success("Correct! 🎉")
+
+        # Are there more chunks to learn?
+        if st.session_state.current_index > 0:
+
+            if st.button("Continue"):
+
+                # Move one chunk earlier.
+                #
+                # Example:
+                # 4 -> 3
+                # 3 -> 2
+                # 2 -> 1
+                # 1 -> 0
+                #
+                # The target is then automatically:
+                #
+                # chunk 4
+                # ↓
+                # chunk 3 + chunk 4
+                # ↓
+                # chunk 2 + chunk 3 + chunk 4
+                # etc.
+
+                st.session_state.current_index -= 1
+
+                st.session_state.reveal_start = time.time()
+                st.session_state.phase = "reveal"
+                st.session_state.submitted = False
+                st.session_state.result = None
+
+                if "recitation_input" in st.session_state:
+                    del st.session_state["recitation_input"]
+
+                st.rerun()
+
+        else:
+
+            st.success("🎉 You memorized the entire line!")
+
+            st.session_state.completed = True
 
     else:
 
@@ -349,7 +367,8 @@ if st.session_state.get("submitted", False):
 
                     st.write(
                         f"You said **{heard}**, "
-                        f"but the expected word was **{expected}**."
+                        f"but the expected word was "
+                        f"**{expected}**."
                     )
 
                 elif mistake_type == "wrong_order":
@@ -363,6 +382,7 @@ if st.session_state.get("submitted", False):
 
             st.session_state.submitted = False
             st.session_state.result = None
+            st.session_state.phase = "reveal"
             st.session_state.reveal_start = time.time()
 
             if "recitation_input" in st.session_state:
@@ -370,103 +390,134 @@ if st.session_state.get("submitted", False):
 
             st.rerun()
 
+# # -------------------------
+# # Memorization exercise
+# # -------------------------
 
-# import os
-# import json
+# if st.session_state.get("started", False):
 
-# import streamlit as st
-# from dotenv import load_dotenv
-# from google import genai
+#     chunks = st.session_state.chunks
 
-# load_dotenv()
+#     # Start with the last chunk
+#     current_index = len(chunks) - 1
+#     current_chunk = chunks[current_index]
 
-# client = genai.Client(
-#     api_key=os.environ["GEMINI_API_KEY"]
-# )
+#     # Record when the chunk was first displayed
+#     if st.session_state.reveal_start is None:
+#         st.session_state.reveal_start = time.time()
 
+#     elapsed = time.time() - st.session_state.reveal_start
 
-# def chunk_line(text):
-#     prompt = f"""
-# You are helping a user memorize a line of text.
+#     # Show chunk for five seconds
+#     if elapsed < 5:
 
-# Break the supplied text into memorization chunks.
+#         remaining = 5 - int(elapsed)
 
-# Rules:
-# 1. Each chunk must contain no more than 10 words.
-# 2. Chunks should ideally contain 6–10 words.
-# 3. Prefer natural grammatical, semantic, and rhythmic boundaries.
-# 4. Prefer chunks that form coherent phrases, clauses, or ideas.
-# 5. Do not split a phrase unnecessarily just to reach 10 words.
-# 6. A chunk may contain fewer than 6 words when necessary to preserve a natural phrase or because it is the end of the text.
-# 7. Keep every word exactly as provided.
-# 8. Do not correct spelling, grammar, punctuation, capitalization, contractions, or archaic language.
-# 9. Do not add or remove any words.
-# 10. Every word in the original text must appear exactly once in the chunks.
-# 11. Return ONLY valid JSON.
-# 12. The JSON must use exactly this format:
+#         st.subheader("Memorize this:")
 
-# {{
-#     "chunks": [
-#         "first chunk",
-#         "second chunk",
-#         "third chunk"
-#     ]
-# }}
+#         st.markdown(
+#             f"### {current_chunk}"
+#         )
 
-# TEXT TO CHUNK:
-# {text}
-# """
+#         st.write(f"Starting in {remaining}...")
 
-#     interaction = client.interactions.create(
-#         model="gemini-3.6-flash",
-#         input=prompt
-#     )
+#         time.sleep(0.1)
+#         st.rerun()
 
-#     return json.loads(interaction.output_text)
+#     # After five seconds, hide chunk and allow user to type it
+#     else:
+
+#         st.subheader("Your turn")
+
+#         st.write(
+#             "Type the chunk you just memorized:"
+#         )
+
+#         response = st.text_input(
+#             "Recite the chunk",
+#             key="recitation_input"
+#         )
+
+#         if st.button("Check Answer"):
+
+#             if not response.strip():
+
+#                 st.warning("Please enter your response.")
+
+#             else:
+
+#                 with st.spinner("Checking your answer..."):
+
+#                     result = evaluate_recitation(
+#                         current_chunk,
+#                         response
+#                     )
+
+#                 st.session_state.result = result
+#                 st.session_state.submitted = True
+
+#                 st.rerun()
 
 
 # # -------------------------
-# # Streamlit UI
+# # Results
 # # -------------------------
 
-# st.title("🎭 Memorize Your Lines")
+# if st.session_state.get("submitted", False):
 
-# st.write(
-#     "Enter a line you'd like to memorize. "
-#     "Gemini will divide it into manageable memorization chunks."
-# )
+#     result = st.session_state.result
 
-# line = st.text_area(
-#     "Your line",
-#     height=150,
-#     placeholder="Enter your line here..."
-# )
+#     if result["correct"]:
 
-
-# if st.button("Create Chunks"):
-
-#     if not line.strip():
-#         st.warning("Please enter a line first.")
+#         st.success("Correct! 🎉")
 
 #     else:
-#         with st.spinner("Creating memorization chunks..."):
 
-#             result = chunk_line(line)
+#         st.error("Not quite. Try again.")
 
-#         st.session_state.chunks = result["chunks"]
-#         st.session_state.started = False
+#         if result["mistakes"]:
 
+#             st.write("Mistakes:")
 
-# # -------------------------
-# # Display chunks
-# # -------------------------
+#             for mistake in result["mistakes"]:
 
-# if "chunks" in st.session_state:
+#                 mistake_type = mistake["type"]
+#                 expected = mistake["expected"]
+#                 heard = mistake["heard"]
 
-#     st.subheader("Your memorization chunks")
+#                 if mistake_type == "missing":
 
-#     for i, chunk in enumerate(
-#         st.session_state.chunks,
-#         start=1
-#     ):
-#         st.write(f"**Chunk {i}:** {chunk}")
+#                     st.write(
+#                         f"Missing word: **{expected}**"
+#                     )
+
+#                 elif mistake_type == "extra":
+
+#                     st.write(
+#                         f"Extra word: **{heard}**"
+#                     )
+
+#                 elif mistake_type == "wrong_word":
+
+#                     st.write(
+#                         f"You said **{heard}**, "
+#                         f"but the expected word was **{expected}**."
+#                     )
+
+#                 elif mistake_type == "wrong_order":
+
+#                     st.write(
+#                         f"Word order issue involving "
+#                         f"**{heard}** / **{expected}**."
+#                     )
+
+#         if st.button("Try Again"):
+
+#             st.session_state.submitted = False
+#             st.session_state.result = None
+#             st.session_state.reveal_start = time.time()
+
+#             if "recitation_input" in st.session_state:
+#                 del st.session_state["recitation_input"]
+
+#             st.rerun()
